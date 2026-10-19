@@ -22,11 +22,11 @@ use gpui::{
     ClipboardEntry as GpuiClipboardEntry, ClipboardItem, Context, CursorStyle, DismissEvent, Div,
     DragMoveEvent, Entity, EntityId, EventEmitter, ExternalDragPayload, ExternalPaths,
     FileDragPaths, FileDropEvent, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement,
-    KeyContext, ListHorizontalSizingBehavior, ListSizingBehavior, Modifiers,
-    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, ParentElement,
-    PathPromptOptions, Pixels, Point, PromptLevel, Render, ScrollStrategy, Stateful, Styled,
-    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred,
-    div, hsla, linear_color_stop, linear_gradient, point, px, size, transparent_white, uniform_list,
+    KeyContext, ListHorizontalSizingBehavior, ListSizingBehavior, Modifiers, ModifiersChangedEvent,
+    MouseButton, MouseDownEvent, MouseExitEvent, ParentElement, PathPromptOptions, Pixels, Point,
+    PromptLevel, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
+    UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred, div, hsla,
+    linear_color_stop, linear_gradient, point, px, size, transparent_white, uniform_list,
 };
 use itertools::Itertools;
 use language::DiagnosticSeverity;
@@ -178,6 +178,7 @@ struct OpenEditorEntry {
     item_id: EntityId,
     item: Box<dyn ItemHandle>,
     is_active: bool,
+    is_preview: bool,
 }
 
 struct UpdateVisibleEntriesTask {
@@ -7496,7 +7497,8 @@ impl ProjectPanel {
         let mut entries = Vec::new();
 
         for pane in panes {
-            for item in pane.read(cx).items() {
+            let pane = pane.read(cx);
+            for item in pane.items() {
                 let item_id = item.item_id();
                 if let Some(path) = item.project_path(cx) {
                     if !seen_paths.insert(path) {
@@ -7510,6 +7512,7 @@ impl ProjectPanel {
                     item_id,
                     item: item.boxed_clone(),
                     is_active: Some(item_id) == active_item_id,
+                    is_preview: pane.is_active_preview_item(item_id),
                 });
             }
         }
@@ -7517,12 +7520,7 @@ impl ProjectPanel {
         entries
     }
 
-    fn activate_open_editor(
-        &self,
-        item_id: EntityId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn activate_open_editor(&self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
@@ -7538,12 +7536,7 @@ impl ProjectPanel {
         });
     }
 
-    fn close_open_editor(
-        &self,
-        item_id: EntityId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn close_open_editor(&self, item_id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
         let Some(workspace) = self.workspace.upgrade() else {
             return;
         };
@@ -7560,8 +7553,12 @@ impl ProjectPanel {
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> AnyElement {
+    ) -> Option<AnyElement> {
         let entries = self.collect_open_editors(cx);
+        if entries.is_empty() {
+            return None;
+        }
+
         let collapsed = self.open_editors_collapsed;
         let dock = match ProjectPanelSettings::get_global(cx).dock {
             DockSide::Left => Some(ui::DockSide::Left),
@@ -7610,7 +7607,7 @@ impl ProjectPanel {
             );
         }
 
-        section.into_any_element()
+        Some(section.into_any_element())
     }
 
     fn render_open_editor_row(
@@ -7627,7 +7624,7 @@ impl ProjectPanel {
             TabContentParams {
                 detail: Some(0),
                 selected: is_active,
-                preview: false,
+                preview: entry.is_preview,
                 deemphasized: false,
                 max_title_len: Some(48),
                 truncate_title_middle: true,
@@ -7636,18 +7633,20 @@ impl ProjectPanel {
             cx,
         );
 
-        let close_button =
-            IconButton::new(("close-open-editor", item_id.as_u64() as usize), IconName::Close)
-                .shape(IconButtonShape::Square)
-                .icon_color(Color::Muted)
-                .size(ButtonSize::None)
-                .icon_size(IconSize::Small)
-                .visible_on_hover("")
-                .tooltip(Tooltip::text("Close Editor"))
-                .on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    this.close_open_editor(item_id, window, cx);
-                }));
+        let close_button = IconButton::new(
+            ("close-open-editor", item_id.as_u64() as usize),
+            IconName::Close,
+        )
+        .shape(IconButtonShape::Square)
+        .icon_color(Color::Muted)
+        .size(ButtonSize::None)
+        .icon_size(IconSize::Small)
+        .tooltip(Tooltip::text("Close Editor"))
+        .on_click(cx.listener(move |this, _, window, cx| {
+            cx.stop_propagation();
+            this.close_open_editor(item_id, window, cx);
+        }))
+        .into_any_element();
 
         ListItem::new(("open-editor", item_id.as_u64() as usize))
             .spacing(ListItemSpacing::Sparse)
@@ -7657,14 +7656,16 @@ impl ProjectPanel {
                 this.activate_open_editor(item_id, window, cx);
             }))
             .start_slot::<AnyElement>(icon.map(|icon| icon.into_any_element()))
-            .end_slot(
-                h_flex()
-                    .gap_1()
-                    .when(is_dirty, |this| {
-                        this.child(Indicator::dot().color(Color::Accent))
+            .map(|item| {
+                if is_active {
+                    item.end_slot(close_button)
+                } else {
+                    item.when(is_dirty, |item| {
+                        item.end_slot(Indicator::dot().color(Color::Accent))
                     })
-                    .child(close_button),
-            )
+                    .end_slot_on_hover(close_button)
+                }
+            })
             .child(tab_content)
             .into_any_element()
     }
@@ -7723,7 +7724,8 @@ impl Render for ProjectPanel {
         // Render before reading `project` / building the panel tree so we don't
         // hold borrows across nested `.when` closures.
         let open_editors_section = show_open_editors
-            .then(|| self.render_open_editors_section(window, cx));
+            .then(|| self.render_open_editors_section(window, cx))
+            .flatten();
 
         let project = self.project.read(cx);
         // Trashing, undo, and redo rely on the `TrashProjectEntry` and
@@ -7906,45 +7908,161 @@ impl Render for ProjectPanel {
                 })
                 .track_focus(&self.focus_handle(cx))
                 .child(
-                    v_flex()
-                        .size_full()
-                        .children(open_editors_section)
-                        .child(
-                            v_flex()
-                                .flex_1()
-                                .size_full()
-                                .min_h_0()
-                                .child(
-                            uniform_list("entries", item_count, {
-                                cx.processor(|this, range: Range<usize>, window, cx| {
-                                    this.rendered_entries_len = range.end - range.start;
-                                    let mut items = Vec::with_capacity(this.rendered_entries_len);
-                                    let marked_selections: Arc<[SelectedEntry]> =
-                                        Arc::from(this.marked_entries.clone());
-                                    this.for_each_visible_entry(
-                                        range,
-                                        window,
-                                        cx,
-                                        &mut |id, details, window, cx| {
-                                            items.push(this.render_entry(
-                                                id,
-                                                details,
-                                                Arc::clone(&marked_selections),
-                                                window,
-                                                cx,
-                                            ));
-                                        },
-                                    );
-                                    items
+                    v_flex().size_full().children(open_editors_section).child(
+                        v_flex()
+                            .flex_1()
+                            .size_full()
+                            .min_h_0()
+                            .child(
+                                uniform_list("entries", item_count, {
+                                    cx.processor(|this, range: Range<usize>, window, cx| {
+                                        this.rendered_entries_len = range.end - range.start;
+                                        let mut items =
+                                            Vec::with_capacity(this.rendered_entries_len);
+                                        let marked_selections: Arc<[SelectedEntry]> =
+                                            Arc::from(this.marked_entries.clone());
+                                        this.for_each_visible_entry(
+                                            range,
+                                            window,
+                                            cx,
+                                            &mut |id, details, window, cx| {
+                                                items.push(this.render_entry(
+                                                    id,
+                                                    details,
+                                                    Arc::clone(&marked_selections),
+                                                    window,
+                                                    cx,
+                                                ));
+                                            },
+                                        );
+                                        items
+                                    })
                                 })
-                            })
-                            .when(show_indent_guides, |list| {
-                                list.with_decoration(
-                                    ui::indent_guides(
-                                        px(indent_size),
-                                        IndentGuideColors::panel(cx),
+                                .when(show_indent_guides, |list| {
+                                    list.with_decoration(
+                                        ui::indent_guides(
+                                            px(indent_size),
+                                            IndentGuideColors::panel(cx),
+                                        )
+                                        .with_compute_indents_fn(
+                                            cx.entity(),
+                                            |this, range, window, cx| {
+                                                let mut items = SmallVec::with_capacity(
+                                                    range.end - range.start,
+                                                );
+                                                this.iter_visible_entries(
+                                                    range,
+                                                    window,
+                                                    cx,
+                                                    &mut |entry, _, entries, _, _| {
+                                                        let (depth, _) =
+                                                            Self::calculate_depth_and_difference(
+                                                                entry, entries,
+                                                            );
+                                                        items.push(depth);
+                                                    },
+                                                );
+                                                items
+                                            },
+                                        )
+                                        .on_click(cx.listener(
+                                            |this,
+                                             active_indent_guide: &IndentGuideLayout,
+                                             window,
+                                             cx| {
+                                                if window.modifiers().secondary() {
+                                                    let ix = active_indent_guide.offset.y;
+                                                    let Some((target_entry, worktree)) = maybe!({
+                                                        let (worktree_id, entry) =
+                                                            this.entry_at_index(ix)?;
+                                                        let worktree = this
+                                                            .project
+                                                            .read(cx)
+                                                            .worktree_for_id(worktree_id, cx)?;
+                                                        let target_entry =
+                                                            worktree.read(cx).entry_for_path(
+                                                                &entry.path.parent()?,
+                                                            )?;
+                                                        Some((target_entry, worktree))
+                                                    }) else {
+                                                        return;
+                                                    };
+
+                                                    this.collapse_entry(
+                                                        target_entry.clone(),
+                                                        worktree,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            },
+                                        ))
+                                        .with_render_fn(
+                                            cx.entity(),
+                                            move |this, params, _, cx| {
+                                                const LEFT_OFFSET: Pixels =
+                                                    ui::LIST_ITEM_INDENT_GUIDE_LEFT_OFFSET;
+                                                const PADDING_Y: Pixels = px(4.);
+                                                const HITBOX_OVERDRAW: Pixels = px(3.);
+
+                                                let active_indent_guide_index = this
+                                                    .find_active_indent_guide(
+                                                        &params.indent_guides,
+                                                        cx,
+                                                    );
+
+                                                let indent_size = params.indent_size;
+                                                let item_height = params.item_height;
+
+                                                params
+                                                    .indent_guides
+                                                    .into_iter()
+                                                    .enumerate()
+                                                    .map(|(idx, layout)| {
+                                                        let offset = if layout.continues_offscreen {
+                                                            px(0.)
+                                                        } else {
+                                                            PADDING_Y
+                                                        };
+                                                        let bounds = Bounds::new(
+                                                            point(
+                                                                layout.offset.x * indent_size
+                                                                    + LEFT_OFFSET,
+                                                                layout.offset.y * item_height
+                                                                    + offset,
+                                                            ),
+                                                            size(
+                                                                px(1.),
+                                                                layout.length * item_height
+                                                                    - offset * 2.,
+                                                            ),
+                                                        );
+                                                        ui::RenderedIndentGuide {
+                                                            bounds,
+                                                            layout,
+                                                            is_active: Some(idx)
+                                                                == active_indent_guide_index,
+                                                            hitbox: Some(Bounds::new(
+                                                                point(
+                                                                    bounds.origin.x
+                                                                        - HITBOX_OVERDRAW,
+                                                                    bounds.origin.y,
+                                                                ),
+                                                                size(
+                                                                    bounds.size.width
+                                                                        + HITBOX_OVERDRAW * 2.,
+                                                                    bounds.size.height,
+                                                                ),
+                                                            )),
+                                                        }
+                                                    })
+                                                    .collect()
+                                            },
+                                        ),
                                     )
-                                    .with_compute_indents_fn(
+                                })
+                                .when(show_sticky_entries, |list| {
+                                    let sticky_items = ui::sticky_items(
                                         cx.entity(),
                                         |this, range, window, cx| {
                                             let mut items =
@@ -7953,148 +8071,37 @@ impl Render for ProjectPanel {
                                                 range,
                                                 window,
                                                 cx,
-                                                &mut |entry, _, entries, _, _| {
+                                                &mut |entry, index, entries, _, _| {
                                                     let (depth, _) =
                                                         Self::calculate_depth_and_difference(
                                                             entry, entries,
                                                         );
-                                                    items.push(depth);
+                                                    let candidate = StickyProjectPanelCandidate {
+                                                        index,
+                                                        depth,
+                                                    };
+                                                    items.push(candidate);
                                                 },
                                             );
                                             items
                                         },
-                                    )
-                                    .on_click(cx.listener(
-                                        |this,
-                                         active_indent_guide: &IndentGuideLayout,
-                                         window,
-                                         cx| {
-                                            if window.modifiers().secondary() {
-                                                let ix = active_indent_guide.offset.y;
-                                                let Some((target_entry, worktree)) = maybe!({
-                                                    let (worktree_id, entry) =
-                                                        this.entry_at_index(ix)?;
-                                                    let worktree = this
-                                                        .project
-                                                        .read(cx)
-                                                        .worktree_for_id(worktree_id, cx)?;
-                                                    let target_entry = worktree
-                                                        .read(cx)
-                                                        .entry_for_path(&entry.path.parent()?)?;
-                                                    Some((target_entry, worktree))
-                                                }) else {
-                                                    return;
-                                                };
-
-                                                this.collapse_entry(
-                                                    target_entry.clone(),
-                                                    worktree,
-                                                    window,
-                                                    cx,
-                                                );
-                                            }
+                                        |this, marker_entry, window, cx| {
+                                            let sticky_entries = this.render_sticky_entries(
+                                                marker_entry,
+                                                window,
+                                                cx,
+                                            );
+                                            this.sticky_items_count = sticky_entries.len();
+                                            sticky_entries
                                         },
-                                    ))
-                                    .with_render_fn(
-                                        cx.entity(),
-                                        move |this, params, _, cx| {
-                                            const LEFT_OFFSET: Pixels =
-                                                ui::LIST_ITEM_INDENT_GUIDE_LEFT_OFFSET;
-                                            const PADDING_Y: Pixels = px(4.);
-                                            const HITBOX_OVERDRAW: Pixels = px(3.);
-
-                                            let active_indent_guide_index = this
-                                                .find_active_indent_guide(
-                                                    &params.indent_guides,
-                                                    cx,
-                                                );
-
-                                            let indent_size = params.indent_size;
-                                            let item_height = params.item_height;
-
-                                            params
-                                                .indent_guides
-                                                .into_iter()
-                                                .enumerate()
-                                                .map(|(idx, layout)| {
-                                                    let offset = if layout.continues_offscreen {
-                                                        px(0.)
-                                                    } else {
-                                                        PADDING_Y
-                                                    };
-                                                    let bounds = Bounds::new(
-                                                        point(
-                                                            layout.offset.x * indent_size
-                                                                + LEFT_OFFSET,
-                                                            layout.offset.y * item_height + offset,
-                                                        ),
-                                                        size(
-                                                            px(1.),
-                                                            layout.length * item_height
-                                                                - offset * 2.,
-                                                        ),
-                                                    );
-                                                    ui::RenderedIndentGuide {
-                                                        bounds,
-                                                        layout,
-                                                        is_active: Some(idx)
-                                                            == active_indent_guide_index,
-                                                        hitbox: Some(Bounds::new(
-                                                            point(
-                                                                bounds.origin.x - HITBOX_OVERDRAW,
-                                                                bounds.origin.y,
-                                                            ),
-                                                            size(
-                                                                bounds.size.width
-                                                                    + HITBOX_OVERDRAW * 2.,
-                                                                bounds.size.height,
-                                                            ),
-                                                        )),
-                                                    }
-                                                })
-                                                .collect()
-                                        },
-                                    ),
-                                )
-                            })
-                            .when(show_sticky_entries, |list| {
-                                let sticky_items = ui::sticky_items(
-                                    cx.entity(),
-                                    |this, range, window, cx| {
-                                        let mut items =
-                                            SmallVec::with_capacity(range.end - range.start);
-                                        this.iter_visible_entries(
-                                            range,
-                                            window,
-                                            cx,
-                                            &mut |entry, index, entries, _, _| {
-                                                let (depth, _) =
-                                                    Self::calculate_depth_and_difference(
-                                                        entry, entries,
-                                                    );
-                                                let candidate =
-                                                    StickyProjectPanelCandidate { index, depth };
-                                                items.push(candidate);
-                                            },
-                                        );
-                                        items
-                                    },
-                                    |this, marker_entry, window, cx| {
-                                        let sticky_entries =
-                                            this.render_sticky_entries(marker_entry, window, cx);
-                                        this.sticky_items_count = sticky_entries.len();
-                                        sticky_entries
-                                    },
-                                );
-                                list.with_decoration(if show_indent_guides {
-                                    sticky_items.with_decoration(
-                                        ui::indent_guides(
-                                            px(indent_size),
-                                            IndentGuideColors::panel(cx),
-                                        )
-                                        .with_render_fn(
-                                            cx.entity(),
-                                            move |_, params, _, _| {
+                                    );
+                                    list.with_decoration(if show_indent_guides {
+                                        sticky_items.with_decoration(
+                                            ui::indent_guides(
+                                                px(indent_size),
+                                                IndentGuideColors::panel(cx),
+                                            )
+                                            .with_render_fn(cx.entity(), move |_, params, _, _| {
                                                 const LEFT_OFFSET: Pixels =
                                                     ui::LIST_ITEM_INDENT_GUIDE_LEFT_OFFSET;
 
@@ -8124,186 +8131,204 @@ impl Render for ProjectPanel {
                                                         }
                                                     })
                                                     .collect()
-                                            },
-                                        ),
-                                    )
+                                            }),
+                                        )
+                                    } else {
+                                        sticky_items
+                                    })
+                                })
+                                .with_sizing_behavior(ListSizingBehavior::Infer)
+                                .with_horizontal_sizing_behavior(if horizontal_scroll {
+                                    ListHorizontalSizingBehavior::Unconstrained
                                 } else {
-                                    sticky_items
+                                    ListHorizontalSizingBehavior::FitList
                                 })
-                            })
-                            .with_sizing_behavior(ListSizingBehavior::Infer)
-                            .with_horizontal_sizing_behavior(if horizontal_scroll {
-                                ListHorizontalSizingBehavior::Unconstrained
-                            } else {
-                                ListHorizontalSizingBehavior::FitList
-                            })
-                            .when(horizontal_scroll, |list| {
-                                list.with_width_from_item(self.state.max_width_item_index)
-                            })
-                            .track_scroll(&self.scroll_handle),
-                        )
-                        .child(
-                            div()
-                                .id("project-panel-blank-area")
-                                .block_mouse_except_scroll()
-                                // `block_mouse_except_scroll` prevents the dock's own
-                                // focus-follows-mouse hover handler from seeing this area,
-                                // so handle it here directly.
-                                .focus_follows_mouse(
-                                    WorkspaceSettings::get_global(cx).focus_follows_mouse,
-                                    cx,
-                                )
-                                .flex_grow_1()
-                                .on_scroll_wheel({
-                                    let scroll_handle = self.scroll_handle.clone();
-                                    let entity_id = cx.entity().entity_id();
-                                    move |event, window, cx| {
-                                        let state = scroll_handle.0.borrow();
-                                        let base_handle = &state.base_handle;
-                                        let current_offset = base_handle.offset();
-                                        let max_offset = base_handle.max_offset();
-                                        let delta = event.delta.pixel_delta(window.line_height());
-                                        let new_offset = (current_offset + delta)
-                                            .clamp(&max_offset.neg(), &Point::default());
+                                .when(horizontal_scroll, |list| {
+                                    list.with_width_from_item(self.state.max_width_item_index)
+                                })
+                                .track_scroll(&self.scroll_handle),
+                            )
+                            .child(
+                                div()
+                                    .id("project-panel-blank-area")
+                                    .block_mouse_except_scroll()
+                                    // `block_mouse_except_scroll` prevents the dock's own
+                                    // focus-follows-mouse hover handler from seeing this area,
+                                    // so handle it here directly.
+                                    .focus_follows_mouse(
+                                        WorkspaceSettings::get_global(cx).focus_follows_mouse,
+                                        cx,
+                                    )
+                                    .flex_grow_1()
+                                    .on_scroll_wheel({
+                                        let scroll_handle = self.scroll_handle.clone();
+                                        let entity_id = cx.entity().entity_id();
+                                        move |event, window, cx| {
+                                            let state = scroll_handle.0.borrow();
+                                            let base_handle = &state.base_handle;
+                                            let current_offset = base_handle.offset();
+                                            let max_offset = base_handle.max_offset();
+                                            let delta =
+                                                event.delta.pixel_delta(window.line_height());
+                                            let new_offset = (current_offset + delta)
+                                                .clamp(&max_offset.neg(), &Point::default());
 
-                                        if new_offset != current_offset {
-                                            base_handle.set_offset(new_offset);
-                                            cx.notify(entity_id);
-                                        }
-                                    }
-                                })
-                                .when(
-                                    self.drag_target_entry.as_ref().is_some_and(
-                                        |entry| match entry {
-                                            DragTarget::Background => true,
-                                            DragTarget::Entry {
-                                                highlight_entry_id, ..
-                                            } => self.state.last_worktree_root_id.is_some_and(
-                                                |root_id| *highlight_entry_id == root_id,
-                                            ),
-                                        },
-                                    ),
-                                    |div| div.bg(cx.theme().colors().drop_target_background),
-                                )
-                                .on_drag_move::<ExternalPaths>(cx.listener(
-                                    move |this, event: &DragMoveEvent<ExternalPaths>, _, _| {
-                                        let Some(_last_root_id) = this.state.last_worktree_root_id
-                                        else {
-                                            return;
-                                        };
-                                        if event.bounds.contains(&event.event.position) {
-                                            this.drag_target_entry = Some(DragTarget::Background);
-                                        } else {
-                                            if this.drag_target_entry.as_ref().is_some_and(|e| {
-                                                matches!(e, DragTarget::Background)
-                                            }) {
-                                                this.drag_target_entry = None;
+                                            if new_offset != current_offset {
+                                                base_handle.set_offset(new_offset);
+                                                cx.notify(entity_id);
                                             }
                                         }
-                                    },
-                                ))
-                                .on_drag_move::<DraggedSelection>(cx.listener(
-                                    move |this, event: &DragMoveEvent<DraggedSelection>, _, cx| {
-                                        let Some(last_root_id) = this.state.last_worktree_root_id
-                                        else {
-                                            return;
-                                        };
-                                        if event.bounds.contains(&event.event.position) {
-                                            let drag_state = event.drag(cx);
-                                            if this.should_highlight_background_for_selection_drag(
-                                                &drag_state,
-                                                last_root_id,
-                                                cx,
-                                            ) {
+                                    })
+                                    .when(
+                                        self.drag_target_entry.as_ref().is_some_and(|entry| {
+                                            match entry {
+                                                DragTarget::Background => true,
+                                                DragTarget::Entry {
+                                                    highlight_entry_id, ..
+                                                } => self.state.last_worktree_root_id.is_some_and(
+                                                    |root_id| *highlight_entry_id == root_id,
+                                                ),
+                                            }
+                                        }),
+                                        |div| div.bg(cx.theme().colors().drop_target_background),
+                                    )
+                                    .on_drag_move::<ExternalPaths>(cx.listener(
+                                        move |this, event: &DragMoveEvent<ExternalPaths>, _, _| {
+                                            let Some(_last_root_id) =
+                                                this.state.last_worktree_root_id
+                                            else {
+                                                return;
+                                            };
+                                            if event.bounds.contains(&event.event.position) {
                                                 this.drag_target_entry =
                                                     Some(DragTarget::Background);
-                                            }
-                                        } else {
-                                            if this.drag_target_entry.as_ref().is_some_and(|e| {
-                                                matches!(e, DragTarget::Background)
-                                            }) {
-                                                this.drag_target_entry = None;
-                                            }
-                                        }
-                                    },
-                                ))
-                                .on_drop(cx.listener(
-                                    move |this, external_paths: &ExternalPaths, window, cx| {
-                                        this.clear_drag_state(cx);
-                                        if let Some(entry_id) = this.state.last_worktree_root_id {
-                                            this.drop_external_files(
-                                                external_paths.paths(),
-                                                entry_id,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                        cx.stop_propagation();
-                                    },
-                                ))
-                                .on_drop(cx.listener(
-                                    move |this, selections: &DraggedSelection, window, cx| {
-                                        this.clear_drag_state(cx);
-                                        if let Some(entry_id) = this.state.last_worktree_root_id {
-                                            this.drag_onto(selections, entry_id, false, window, cx);
-                                        }
-                                        cx.stop_propagation();
-                                    },
-                                ))
-                                .on_click(cx.listener(|this, event, window, cx| {
-                                    if matches!(event, gpui::ClickEvent::Keyboard(_)) {
-                                        return;
-                                    }
-                                    cx.stop_propagation();
-                                    this.selection = None;
-                                    this.marked_entries.clear();
-                                    this.focus_handle(cx).focus(window, cx);
-                                }))
-                                .on_mouse_down(
-                                    MouseButton::Right,
-                                    cx.listener(move |this, event: &MouseDownEvent, window, cx| {
-                                        // When deploying the context menu anywhere below the last project entry,
-                                        // act as if the user clicked the root of the last worktree.
-                                        if let Some(entry_id) = this.state.last_worktree_root_id {
-                                            this.deploy_context_menu(
-                                                ContextMenuPlacement::AtMouse(event.position),
-                                                entry_id,
-                                                window,
-                                                cx,
-                                            );
-                                        }
-                                    }),
-                                )
-                                .when(!project.is_read_only(cx), |el| {
-                                    el.on_click(cx.listener(
-                                        |this, event: &gpui::ClickEvent, window, cx| {
-                                            if event.click_count() > 1
-                                                && let Some(entry_id) =
-                                                    this.state.last_worktree_root_id
-                                            {
-                                                let project = this.project.read(cx);
-
-                                                let worktree_id = if let Some(worktree) =
-                                                    project.worktree_for_entry(entry_id, cx)
-                                                {
-                                                    worktree.read(cx).id()
-                                                } else {
-                                                    return;
-                                                };
-
-                                                this.selection = Some(SelectedEntry {
-                                                    worktree_id,
-                                                    entry_id,
-                                                });
-
-                                                this.new_file(&NewFile, window, cx);
+                                            } else {
+                                                if this.drag_target_entry.as_ref().is_some_and(
+                                                    |e| matches!(e, DragTarget::Background),
+                                                ) {
+                                                    this.drag_target_entry = None;
+                                                }
                                             }
                                         },
                                     ))
-                                }),
-                        )
-                        .size_full(),
-                        ),
+                                    .on_drag_move::<DraggedSelection>(cx.listener(
+                                        move |this,
+                                              event: &DragMoveEvent<DraggedSelection>,
+                                              _,
+                                              cx| {
+                                            let Some(last_root_id) =
+                                                this.state.last_worktree_root_id
+                                            else {
+                                                return;
+                                            };
+                                            if event.bounds.contains(&event.event.position) {
+                                                let drag_state = event.drag(cx);
+                                                if this
+                                                    .should_highlight_background_for_selection_drag(
+                                                        &drag_state,
+                                                        last_root_id,
+                                                        cx,
+                                                    )
+                                                {
+                                                    this.drag_target_entry =
+                                                        Some(DragTarget::Background);
+                                                }
+                                            } else {
+                                                if this.drag_target_entry.as_ref().is_some_and(
+                                                    |e| matches!(e, DragTarget::Background),
+                                                ) {
+                                                    this.drag_target_entry = None;
+                                                }
+                                            }
+                                        },
+                                    ))
+                                    .on_drop(cx.listener(
+                                        move |this, external_paths: &ExternalPaths, window, cx| {
+                                            this.clear_drag_state(cx);
+                                            if let Some(entry_id) = this.state.last_worktree_root_id
+                                            {
+                                                this.drop_external_files(
+                                                    external_paths.paths(),
+                                                    entry_id,
+                                                    window,
+                                                    cx,
+                                                );
+                                            }
+                                            cx.stop_propagation();
+                                        },
+                                    ))
+                                    .on_drop(cx.listener(
+                                        move |this, selections: &DraggedSelection, window, cx| {
+                                            this.clear_drag_state(cx);
+                                            if let Some(entry_id) = this.state.last_worktree_root_id
+                                            {
+                                                this.drag_onto(
+                                                    selections, entry_id, false, window, cx,
+                                                );
+                                            }
+                                            cx.stop_propagation();
+                                        },
+                                    ))
+                                    .on_click(cx.listener(|this, event, window, cx| {
+                                        if matches!(event, gpui::ClickEvent::Keyboard(_)) {
+                                            return;
+                                        }
+                                        cx.stop_propagation();
+                                        this.selection = None;
+                                        this.marked_entries.clear();
+                                        this.focus_handle(cx).focus(window, cx);
+                                    }))
+                                    .on_mouse_down(
+                                        MouseButton::Right,
+                                        cx.listener(
+                                            move |this, event: &MouseDownEvent, window, cx| {
+                                                // When deploying the context menu anywhere below the last project entry,
+                                                // act as if the user clicked the root of the last worktree.
+                                                if let Some(entry_id) =
+                                                    this.state.last_worktree_root_id
+                                                {
+                                                    this.deploy_context_menu(
+                                                        ContextMenuPlacement::AtMouse(
+                                                            event.position,
+                                                        ),
+                                                        entry_id,
+                                                        window,
+                                                        cx,
+                                                    );
+                                                }
+                                            },
+                                        ),
+                                    )
+                                    .when(!project.is_read_only(cx), |el| {
+                                        el.on_click(cx.listener(
+                                            |this, event: &gpui::ClickEvent, window, cx| {
+                                                if event.click_count() > 1
+                                                    && let Some(entry_id) =
+                                                        this.state.last_worktree_root_id
+                                                {
+                                                    let project = this.project.read(cx);
+
+                                                    let worktree_id = if let Some(worktree) =
+                                                        project.worktree_for_entry(entry_id, cx)
+                                                    {
+                                                        worktree.read(cx).id()
+                                                    } else {
+                                                        return;
+                                                    };
+
+                                                    this.selection = Some(SelectedEntry {
+                                                        worktree_id,
+                                                        entry_id,
+                                                    });
+
+                                                    this.new_file(&NewFile, window, cx);
+                                                }
+                                            },
+                                        ))
+                                    }),
+                            )
+                            .size_full(),
+                    ),
                 )
                 .custom_scrollbars(
                     {
