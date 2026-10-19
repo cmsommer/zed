@@ -20,13 +20,13 @@ use git_ui_core::file_diff_view::FileDiffView;
 use gpui::{
     Action, Anchor, AnyElement, App, AsyncWindowContext, Bounds,
     ClipboardEntry as GpuiClipboardEntry, ClipboardItem, Context, CursorStyle, DismissEvent, Div,
-    DragMoveEvent, Entity, EventEmitter, ExternalDragPayload, ExternalPaths, FileDragPaths,
-    FileDropEvent, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement, KeyContext,
-    ListHorizontalSizingBehavior, ListSizingBehavior, Modifiers, ModifiersChangedEvent,
-    MouseButton, MouseDownEvent, MouseExitEvent, ParentElement, PathPromptOptions, Pixels, Point,
-    PromptLevel, Render, ScrollStrategy, Stateful, Styled, Subscription, Task,
-    UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred, div, hsla,
-    linear_color_stop, linear_gradient, point, px, size, transparent_white, uniform_list,
+    DragMoveEvent, Entity, EntityId, EventEmitter, ExternalDragPayload, ExternalPaths,
+    FileDragPaths, FileDropEvent, FocusHandle, Focusable, FontWeight, Hsla, InteractiveElement,
+    KeyContext, ListHorizontalSizingBehavior, ListSizingBehavior, Modifiers,
+    ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseExitEvent, ParentElement,
+    PathPromptOptions, Pixels, Point, PromptLevel, Render, ScrollStrategy, Stateful, Styled,
+    Subscription, Task, UniformListScrollHandle, WeakEntity, Window, actions, anchored, deferred,
+    div, hsla, linear_color_stop, linear_gradient, point, px, size, transparent_white, uniform_list,
 };
 use itertools::Itertools;
 use language::DiagnosticSeverity;
@@ -61,9 +61,10 @@ use std::{
 use svg_preview::svg_preview_view::SvgPreviewView;
 use theme_settings::ThemeSettings;
 use ui::{
-    ContextMenu, DecoratedIcon, IconDecoration, IconDecorationKind, IndentGuideColors,
-    IndentGuideLayout, Indicator, KeyBinding, ListItem, ListItemSpacing, ProjectEmptyState,
-    ScrollAxes, ScrollableHandle, Scrollbars, StickyCandidate, Tooltip, WithScrollbar, prelude::*,
+    ContextMenu, DecoratedIcon, IconButtonShape, IconDecoration, IconDecorationKind,
+    IndentGuideColors, IndentGuideLayout, Indicator, KeyBinding, ListHeader, ListItem,
+    ListItemSpacing, ProjectEmptyState, ScrollAxes, ScrollableHandle, Scrollbars, StickyCandidate,
+    Tooltip, WithScrollbar, prelude::*,
 };
 use util::{
     ResultExt, TryFutureExt,
@@ -73,10 +74,12 @@ use util::{
     rel_path::{RelPath, RelPathBuf},
 };
 use workspace::{
-    DraggedSelection, OpenInTerminal, OpenMode, OpenOptions, OpenVisible, PreviewTabsSettings,
-    SelectedEntry, SplitDirection, Workspace, WorkspaceSettings, copy_file_permalink,
+    DraggedSelection, Event as WorkspaceEvent, ItemHandle, OpenInTerminal, OpenMode, OpenOptions,
+    OpenVisible, PreviewTabsSettings, SaveIntent, SelectedEntry, SplitDirection, Workspace,
+    WorkspaceSettings, copy_file_permalink,
     dock::{DockPosition, Panel, PanelEvent},
     focus_follows_mouse::FocusFollowsMouse as _,
+    item::TabContentParams,
     notifications::{DetachAndPromptErr, NotifyResultExt, NotifyTaskExt},
     open_file_permalink,
 };
@@ -167,6 +170,14 @@ pub struct ProjectPanel {
     update_visible_entries_task: UpdateVisibleEntriesTask,
     undo_manager: UndoManager,
     state: State,
+    /// When true, the Open Editors section above the file tree is collapsed.
+    open_editors_collapsed: bool,
+}
+
+struct OpenEditorEntry {
+    item_id: EntityId,
+    item: Box<dyn ItemHandle>,
+    is_active: bool,
 }
 
 struct UpdateVisibleEntriesTask {
@@ -711,9 +722,27 @@ impl ProjectPanel {
         let project = workspace.project().clone();
         let git_store = project.read(cx).git_store().clone();
         let path_style = project.read(cx).path_style(cx);
+        let workspace_handle = cx.entity();
         let project_panel = cx.new(|cx| {
             let focus_handle = cx.focus_handle();
             cx.on_focus(&focus_handle, window, Self::focus_in).detach();
+
+            cx.observe(&workspace_handle, |_, _, cx| cx.notify())
+                .detach();
+            cx.subscribe_in(
+                &workspace_handle,
+                window,
+                |_, _, event, _, cx| match event {
+                    WorkspaceEvent::ItemAdded { .. }
+                    | WorkspaceEvent::ItemRemoved { .. }
+                    | WorkspaceEvent::ActiveItemChanged
+                    | WorkspaceEvent::UserSavedItem { .. }
+                    | WorkspaceEvent::PaneAdded(_)
+                    | WorkspaceEvent::PaneRemoved => cx.notify(),
+                    _ => {}
+                },
+            )
+            .detach();
 
             cx.subscribe_in(
                 &git_store,
@@ -922,6 +951,7 @@ impl ProjectPanel {
                     project.read(cx).is_via_collab(),
                     &cx,
                 ),
+                open_editors_collapsed: false,
             };
             this.update_visible_entries(None, false, false, window, cx);
 
@@ -7449,6 +7479,195 @@ impl ProjectPanel {
             })
             .collect()
     }
+
+    fn collect_open_editors(&self, cx: &App) -> Vec<OpenEditorEntry> {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return Vec::new();
+        };
+        let workspace = workspace.read(cx);
+        let active_item_id = workspace.active_item(cx).map(|item| item.item_id());
+        let active_pane = workspace.active_pane().clone();
+
+        let mut panes: Vec<_> = workspace.panes().to_vec();
+        panes.sort_by_key(|pane| *pane != active_pane);
+
+        let mut seen_paths = HashSet::new();
+        let mut seen_ids = HashSet::new();
+        let mut entries = Vec::new();
+
+        for pane in panes {
+            for item in pane.read(cx).items() {
+                let item_id = item.item_id();
+                if let Some(path) = item.project_path(cx) {
+                    if !seen_paths.insert(path) {
+                        continue;
+                    }
+                } else if !seen_ids.insert(item_id) {
+                    continue;
+                }
+
+                entries.push(OpenEditorEntry {
+                    item_id,
+                    item: item.boxed_clone(),
+                    is_active: Some(item_id) == active_item_id,
+                });
+            }
+        }
+
+        entries
+    }
+
+    fn activate_open_editor(
+        &self,
+        item_id: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            let Some(item) = workspace
+                .items(cx)
+                .find(|item| item.item_id() == item_id)
+                .map(|item| item.boxed_clone())
+            else {
+                return;
+            };
+            workspace.activate_item(item.as_ref(), true, true, window, cx);
+        });
+    }
+
+    fn close_open_editor(
+        &self,
+        item_id: EntityId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.workspace.upgrade() else {
+            return;
+        };
+        let Some(pane) = workspace.read(cx).pane_for_item_id(item_id) else {
+            return;
+        };
+        pane.update(cx, |pane, cx| {
+            pane.close_item_by_id(item_id, SaveIntent::Close, window, cx)
+                .detach_and_log_err(cx);
+        });
+    }
+
+    fn render_open_editors_section(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let entries = self.collect_open_editors(cx);
+        let collapsed = self.open_editors_collapsed;
+        let dock = match ProjectPanelSettings::get_global(cx).dock {
+            DockSide::Left => Some(ui::DockSide::Left),
+            DockSide::Right => Some(ui::DockSide::Right),
+        };
+
+        let header = ListHeader::new("Open Editors")
+            .toggle(Some(!collapsed))
+            .disclosure_shape(IconButtonShape::Square)
+            .inset(true)
+            .dock(dock)
+            .on_toggle(cx.listener(|this, _, _, cx| {
+                this.open_editors_collapsed = !this.open_editors_collapsed;
+                cx.notify();
+            }));
+
+        let mut section = v_flex()
+            .id("open-editors")
+            .w_full()
+            .flex_none()
+            .border_b_1()
+            .border_color(cx.theme().colors().border)
+            .child(header);
+
+        if !collapsed {
+            // Cap only when the list is long enough that it would crowd the tree.
+            // Always sizing to content avoids an empty scroll viewport + stray scrollbar
+            // when there are only a few open editors.
+            const OPEN_EDITORS_SCROLL_THRESHOLD: usize = 8;
+            const OPEN_EDITORS_MAX_HEIGHT: Pixels = px(220.);
+
+            let needs_scroll = entries.len() > OPEN_EDITORS_SCROLL_THRESHOLD;
+            let rows: Vec<AnyElement> = entries
+                .into_iter()
+                .map(|entry| self.render_open_editor_row(entry, window, cx))
+                .collect();
+            section = section.child(
+                v_flex()
+                    .id("open-editors-list")
+                    .w_full()
+                    .flex_none()
+                    .when(needs_scroll, |this| {
+                        this.max_h(OPEN_EDITORS_MAX_HEIGHT).overflow_y_scroll()
+                    })
+                    .children(rows),
+            );
+        }
+
+        section.into_any_element()
+    }
+
+    fn render_open_editor_row(
+        &self,
+        entry: OpenEditorEntry,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let item_id = entry.item_id;
+        let is_active = entry.is_active;
+        let is_dirty = entry.item.is_dirty(cx);
+        let icon = entry.item.tab_icon(window, cx);
+        let tab_content = entry.item.tab_content(
+            TabContentParams {
+                detail: Some(0),
+                selected: is_active,
+                preview: false,
+                deemphasized: false,
+                max_title_len: Some(48),
+                truncate_title_middle: true,
+            },
+            window,
+            cx,
+        );
+
+        let close_button =
+            IconButton::new(("close-open-editor", item_id.as_u64() as usize), IconName::Close)
+                .shape(IconButtonShape::Square)
+                .icon_color(Color::Muted)
+                .size(ButtonSize::None)
+                .icon_size(IconSize::Small)
+                .visible_on_hover("")
+                .tooltip(Tooltip::text("Close Editor"))
+                .on_click(cx.listener(move |this, _, window, cx| {
+                    cx.stop_propagation();
+                    this.close_open_editor(item_id, window, cx);
+                }));
+
+        ListItem::new(("open-editor", item_id.as_u64() as usize))
+            .spacing(ListItemSpacing::Sparse)
+            .selectable(true)
+            .toggle_state(is_active)
+            .on_click(cx.listener(move |this, _, window, cx| {
+                this.activate_open_editor(item_id, window, cx);
+            }))
+            .start_slot::<AnyElement>(icon.map(|icon| icon.into_any_element()))
+            .end_slot(
+                h_flex()
+                    .gap_1()
+                    .when(is_dirty, |this| {
+                        this.child(Indicator::dot().color(Color::Accent))
+                    })
+                    .child(close_button),
+            )
+            .child(tab_content)
+            .into_any_element()
+    }
 }
 
 #[derive(Clone)]
@@ -7487,8 +7706,7 @@ impl Render for ProjectPanel {
         }
 
         let has_worktree = !self.state.visible_entries.is_empty();
-        let project = self.project.read(cx);
-        let panel_settings = ProjectPanelSettings::get_global(cx);
+        let panel_settings = *ProjectPanelSettings::get_global(cx);
         let indent_size = panel_settings.indent_size;
         let show_indent_guides = panel_settings.indent_guides.show == ShowIndentGuides::Always;
         let horizontal_scroll = panel_settings.scrollbar.horizontal_scroll;
@@ -7501,7 +7719,13 @@ impl Render for ProjectPanel {
                 false
             }
         };
+        let show_open_editors = panel_settings.show_open_editors;
+        // Render before reading `project` / building the panel tree so we don't
+        // hold borrows across nested `.when` closures.
+        let open_editors_section = show_open_editors
+            .then(|| self.render_open_editors_section(window, cx));
 
+        let project = self.project.read(cx);
         // Trashing, undo, and redo rely on the `TrashProjectEntry` and
         // `RestoreProjectEntry` messages, which older collab hosts can't
         // decode, with the operation silently never completing. As such, we
@@ -7683,7 +7907,14 @@ impl Render for ProjectPanel {
                 .track_focus(&self.focus_handle(cx))
                 .child(
                     v_flex()
+                        .size_full()
+                        .children(open_editors_section)
                         .child(
+                            v_flex()
+                                .flex_1()
+                                .size_full()
+                                .min_h_0()
+                                .child(
                             uniform_list("entries", item_count, {
                                 cx.processor(|this, range: Range<usize>, window, cx| {
                                     this.rendered_entries_len = range.end - range.start;
@@ -8072,6 +8303,7 @@ impl Render for ProjectPanel {
                                 }),
                         )
                         .size_full(),
+                        ),
                 )
                 .custom_scrollbars(
                     {
@@ -8108,6 +8340,7 @@ impl Render for ProjectPanel {
             v_flex()
                 .id("empty-project_panel-wrapper")
                 .size_full()
+                .children(open_editors_section)
                 .child(
                     ProjectEmptyState::new(
                         "Project Panel",
