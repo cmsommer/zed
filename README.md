@@ -5,6 +5,9 @@ This repository is a fork of [Zed](https://github.com/zed-industries/zed). See [
 [![Zed](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/zed-industries/zed/main/assets/badge/v0.json)](https://zed.dev)
 [![CI](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml/badge.svg)](https://github.com/zed-industries/zed/actions/workflows/run_tests.yml)
 
+This also includes a list of changes from these branches. (Branches are kept in sync with zed)
+- feature/open-editors-in-project-panel: For a vertical list of open editors
+
 ---
 
 ### Configuration
