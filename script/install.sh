@@ -54,10 +54,10 @@ main() {
 
     "$platform" "$@"
 
-    if [ "$(command -v zed)" = "$HOME/.local/bin/zed" ]; then
-        echo "Zed has been installed. Run with 'zed'"
+    if [ "$(command -v zcode)" = "$HOME/.local/bin/zcode" ]; then
+        echo "Zcode has been installed. Run with 'zcode'"
     else
-        echo "To run Zed from your terminal, you must add ~/.local/bin to your PATH"
+        echo "To run Zcode from your terminal, you must add ~/.local/bin to your PATH"
         echo "Run:"
 
         case "$SHELL" in
@@ -74,7 +74,7 @@ main() {
                 ;;
         esac
 
-        echo "To run Zed now, '~/.local/bin/zed'"
+        echo "To run Zcode now, '~/.local/bin/zcode'"
     fi
 }
 
@@ -94,20 +94,20 @@ linux() {
     appid=""
     case "$channel" in
       stable)
-        appid="dev.zed.Zed"
+        appid="dev.zcode.Zcode"
         ;;
       nightly)
-        appid="dev.zed.Zed-Nightly"
+        appid="dev.zcode.Zcode-Nightly"
         ;;
       preview)
-        appid="dev.zed.Zed-Preview"
+        appid="dev.zcode.Zcode-Preview"
         ;;
       dev)
-        appid="dev.zed.Zed-Dev"
+        appid="dev.zcode.Zcode-Dev"
         ;;
       *)
         echo "Unknown release channel: ${channel}. Using stable app ID."
-        appid="dev.zed.Zed"
+        appid="dev.zcode.Zcode"
         ;;
     esac
 
@@ -120,9 +120,9 @@ linux() {
     if [ -f "$zed_editor" ] && command -v ldd >/dev/null 2>&1; then
         missing="$(ldd "$zed_editor" 2>/dev/null | sed -n 's/^[[:space:]]*\(.*\) => not found$/\1/p')"
         if [ -n "$missing" ]; then
-            echo "Warning: your system is missing libraries that Zed needs:"
+            echo "Warning: your system is missing libraries that Zcode needs:"
             echo "$missing" | sed 's/^/    /'
-            echo "Install them with your package manager, or Zed will fail to start."
+            echo "Install them with your package manager, or Zcode will fail to start."
         fi
     fi
 
@@ -130,11 +130,13 @@ linux() {
     mkdir -p "$HOME/.local/bin" "$HOME/.local/share/applications"
 
     # Link the binary
-    if [ -f "$HOME/.local/zed$suffix.app/bin/zed" ]; then
-        ln -sf "$HOME/.local/zed$suffix.app/bin/zed" "$HOME/.local/bin/zed"
+    if [ -f "$HOME/.local/zed$suffix.app/bin/zcode" ]; then
+        ln -sf "$HOME/.local/zed$suffix.app/bin/zcode" "$HOME/.local/bin/zcode"
+    elif [ -f "$HOME/.local/zed$suffix.app/bin/zed" ]; then
+        ln -sf "$HOME/.local/zed$suffix.app/bin/zed" "$HOME/.local/bin/zcode"
     else
         # support for versions before 0.139.x.
-        ln -sf "$HOME/.local/zed$suffix.app/bin/cli" "$HOME/.local/bin/zed"
+        ln -sf "$HOME/.local/zed$suffix.app/bin/cli" "$HOME/.local/bin/zcode"
     fi
 
     # Copy .desktop file
@@ -146,8 +148,10 @@ linux() {
         # Fallback for older tarballs
         cp "$src_dir/zed$suffix.desktop" "${desktop_file_path}"
     fi
-    sed -i "s|Icon=zed|Icon=$HOME/.local/zed$suffix.app/share/icons/hicolor/512x512/apps/zed.png|g" "${desktop_file_path}"
-    sed -i "s|Exec=zed|Exec=$HOME/.local/zed$suffix.app/bin/zed|g" "${desktop_file_path}"
+    sed -i "s|Icon=zcode|Icon=$HOME/.local/zed$suffix.app/share/icons/hicolor/512x512/apps/zcode.png|g" "${desktop_file_path}"
+    sed -i "s|Icon=zed|Icon=$HOME/.local/zed$suffix.app/share/icons/hicolor/512x512/apps/zcode.png|g" "${desktop_file_path}"
+    sed -i "s|Exec=zcode|Exec=$HOME/.local/zed$suffix.app/bin/zcode|g" "${desktop_file_path}"
+    sed -i "s|Exec=zed|Exec=$HOME/.local/zed$suffix.app/bin/zcode|g" "${desktop_file_path}"
 }
 
 macos() {
@@ -165,7 +169,7 @@ macos() {
 
     mkdir -p "$HOME/.local/bin"
     # Link the binary
-    ln -sf "/Applications/$app/Contents/MacOS/cli" "$HOME/.local/bin/zed"
+    ln -sf "/Applications/$app/Contents/MacOS/cli" "$HOME/.local/bin/zcode"
 }
 
 main "$@"

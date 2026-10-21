@@ -48,21 +48,21 @@ trait InstalledApp {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "zed",
+    name = "zcode",
     disable_version_flag = true,
-    before_help = "The Zed CLI binary.
-This CLI is a separate binary that invokes Zed.
+    before_help = "The Zcode CLI binary.
+This CLI is a separate binary that invokes Zcode.
 
 Examples:
-    `zed`
-          Simply opens Zed
-    `zed --foreground`
+    `zcode`
+          Simply opens Zcode
+    `zcode --foreground`
           Runs in foreground (shows all logs)
-    `zed path-to-your-project`
-          Open your project in Zed
-    `zed -n path-to-file `
+    `zcode path-to-your-project`
+          Open your project in Zcode
+    `zcode -n path-to-file `
           Open file/folder in a new window",
-    after_help = "To read from stdin, append '-', e.g. 'ps axf | zed -'"
+    after_help = "To read from stdin, append '-', e.g. 'ps axf | zcode -'"
 )]
 struct Args {
     /// Wait for all of the given paths to be opened/closed before exiting.
@@ -87,7 +87,7 @@ struct Args {
     classic: bool,
     /// Sets a custom directory for all user data (e.g., database, extensions, logs).
     /// This overrides the default platform-specific data directory location:
-    #[cfg_attr(target_os = "macos", doc = "`~/Library/Application Support/Zed`.")]
+    #[cfg_attr(target_os = "macos", doc = "`~/Library/Application Support/Zcode`.")]
     #[cfg_attr(target_os = "windows", doc = "`%LOCALAPPDATA%\\Zed`.")]
     #[cfg_attr(
         not(any(target_os = "windows", target_os = "macos")),
