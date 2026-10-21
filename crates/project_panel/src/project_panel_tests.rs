@@ -12489,6 +12489,113 @@ async fn test_focus_follows_mouse_into_blank_area(cx: &mut gpui::TestAppContext)
     });
 }
 
+#[gpui::test]
+async fn test_open_editors_section(cx: &mut gpui::TestAppContext) {
+    init_test_with_editor(cx);
+
+    let fs = FakeFs::new(cx.executor());
+    fs.insert_tree(
+        path!("/root"),
+        json!({
+            "a.txt": "aaa",
+            "b.txt": "bbb",
+        }),
+    )
+    .await;
+
+    let project = Project::test(fs, [path!("/root").as_ref()], cx).await;
+    let window = cx.add_window(|window, cx| MultiWorkspace::test_new(project.clone(), window, cx));
+    let workspace = window
+        .read_with(cx, |mw, _| mw.workspace().clone())
+        .unwrap();
+    let cx = &mut VisualTestContext::from_window(window.into(), cx);
+    let panel = workspace.update_in(cx, |workspace, window, cx| {
+        let panel = ProjectPanel::new(workspace, window, cx);
+        workspace.add_panel(panel.clone(), window, cx);
+        workspace.open_panel::<ProjectPanel>(window, cx);
+        panel
+    });
+    cx.run_until_parked();
+
+    panel.update(cx, |panel, cx| {
+        assert!(
+            panel.collect_open_editors(cx).is_empty(),
+            "Open Editors should start empty"
+        );
+    });
+
+    let worktree_id = workspace.update(cx, |workspace, cx| {
+        workspace.worktrees(cx).next().unwrap().read(cx).id()
+    });
+
+    for name in ["a.txt", "b.txt"] {
+        workspace
+            .update_in(cx, |workspace, window, cx| {
+                workspace.open_path(
+                    ProjectPath {
+                        worktree_id,
+                        path: rel_path(name).into(),
+                    },
+                    None,
+                    true,
+                    window,
+                    cx,
+                )
+            })
+            .await
+            .unwrap();
+        cx.run_until_parked();
+    }
+
+    panel.update(cx, |panel, cx| {
+        let editors = panel.collect_open_editors(cx);
+        assert_eq!(editors.len(), 2, "both opened files should appear");
+        assert!(
+            editors.iter().any(|entry| entry.is_active),
+            "one open editor should be marked active"
+        );
+    });
+
+    let first_item_id = panel.update(cx, |panel, cx| panel.collect_open_editors(cx)[0].item_id);
+    panel.update_in(cx, |panel, window, cx| {
+        panel.activate_open_editor(first_item_id, window, cx);
+    });
+    cx.run_until_parked();
+    panel.update(cx, |panel, cx| {
+        let editors = panel.collect_open_editors(cx);
+        assert_eq!(
+            editors.iter().find(|e| e.is_active).map(|e| e.item_id),
+            Some(first_item_id)
+        );
+    });
+
+    panel.update_in(cx, |panel, window, cx| {
+        panel.close_open_editor(first_item_id, window, cx);
+    });
+    cx.run_until_parked();
+    panel.update(cx, |panel, cx| {
+        let editors = panel.collect_open_editors(cx);
+        assert_eq!(editors.len(), 1, "closed editor should leave the list");
+        assert!(!editors.iter().any(|e| e.item_id == first_item_id));
+    });
+
+    cx.update_global::<SettingsStore, _>(|store, cx| {
+        store.update_user_settings(cx, |settings| {
+            settings
+                .project_panel
+                .get_or_insert_default()
+                .show_open_editors = Some(false);
+        });
+    });
+    cx.run_until_parked();
+    panel.update(cx, |_, cx| {
+        assert!(
+            !crate::project_panel_settings::ProjectPanelSettings::get_global(cx).show_open_editors,
+            "setting should hide the Open Editors section"
+        );
+    });
+}
+
 pub(crate) fn init_test(cx: &mut TestAppContext) {
     cx.update(|cx| {
         let settings_store = SettingsStore::test(cx);

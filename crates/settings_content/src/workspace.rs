@@ -917,6 +917,10 @@ pub struct ProjectPanelSettingsContent {
     ///
     /// Default: false
     pub git_status_indicator: Option<bool>,
+    /// Whether to show the Open Editors list above the file tree in the project panel.
+    ///
+    /// Default: true
+    pub show_open_editors: Option<bool>,
 }
 
 /// Controls the width of the git diff hunk indicators in the gutter.
